@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Cisco Secure Workload — ERSPAN Integration Guide</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:900px;margin:2rem auto;padding:0 1.5rem;color:#1a1a2e;line-height:1.65}h1{font-size:1.8rem;border-bottom:2px solid #005073;padding-bottom:.5rem}h2{font-size:1.3rem;margin-top:2rem;color:#005073}h3{font-size:1.1rem;color:#333}code{background:#f4f4f4;padding:.15em .4em;border-radius:3px;font-size:.9em}pre{background:#f4f4f4;padding:1rem;border-radius:4px;overflow-x:auto}table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.92em}th{background:#005073;color:#fff;padding:.5rem .75rem;text-align:left}td{padding:.45rem .75rem;border-bottom:1px solid #e2e2e2}tr:nth-child(even) td{background:#f9f9f9}blockquote{border-left:4px solid #005073;margin:0;padding:.5rem 1rem;background:#f0f7fb;color:#444}a{color:#0066cc}
+</style>
+</head>
+<body>
+<h1 id="cisco-secure-workload-erspan-integration-guide">Cisco Secure
+Workload — ERSPAN Integration Guide</h1>
+<blockquote>
+<p><strong>Disclaimer:</strong> Community reference guide by Cisco
+Solutions Engineering. Always consult <a href="https://www.cisco.com/c/en/us/products/security/tetration/index.html">official
+Cisco Secure Workload documentation</a> for authoritative guidance.</p>
+</blockquote>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="#1-overview">Overview</a></li>
+<li><a href="#2-architecture">Architecture</a></li>
+<li><a href="#3-erspan-types-supported">ERSPAN Types Supported</a></li>
+<li><a href="#4-use-cases">Use Cases</a></li>
+<li><a href="#5-prerequisites">Prerequisites</a></li>
+<li><a href="#6-step-a--configure-erspan-source-on-switch">Step A —
+Configure ERSPAN Source on Switch</a></li>
+<li><a href="#7-step-b--deploy-the-csw-ingest-appliance-for-erspan">Step
+B — Deploy the CSW Ingest Appliance for ERSPAN</a></li>
+<li><a href="#8-performance-considerations">Performance
+Considerations</a></li>
+<li><a href="#9-security-considerations">Security
+Considerations</a></li>
+<li><a href="#10-verification">Verification</a></li>
+<li><a href="#11-limits">Limits</a></li>
+<li><a href="#12-troubleshooting">Troubleshooting</a></li>
+<li><a href="#13-related-resources">Related Resources</a></li>
+</ol>
+<hr />
+<h2 id="overview">1. Overview</h2>
+<p><strong>ERSPAN (Encapsulated Remote Switch Port Analyzer)</strong>
+allows Cisco Secure Workload to ingest full <strong>packet-level flow
+visibility</strong> from network switches by mirroring traffic to a
+remote analyzer — without any software agent on the monitored hosts.</p>
+<p>Unlike NetFlow (which provides aggregated flow summaries), ERSPAN
+delivers <strong>individual mirrored frames</strong>, providing the
+richest possible agentless visibility: full L2–L7 context, actual
+payload sizes, exact timing, and precise TCP flag analysis.</p>
+<h3 id="when-to-use-erspan-vs-netflow-vs-agent">When to use ERSPAN vs
+NetFlow vs Agent</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 28%" />
+<col style="width: 28%" />
+<col style="width: 23%" />
+</colgroup>
+<thead>
+<tr>
+<th>Method</th>
+<th>Visibility</th>
+<th>Deployment</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CSW Agent</strong></td>
+<td>Deepest (process, user, socket)</td>
+<td>Agent on each host</td>
+<td>Modern Linux/Windows workloads</td>
+</tr>
+<tr>
+<td><strong>ERSPAN</strong></td>
+<td>Rich (full frames, L7 context)</td>
+<td>Switch config + Ingest VM</td>
+<td>Legacy servers, mainframes, OT/IoT</td>
+</tr>
+<tr>
+<td><strong>NetFlow</strong></td>
+<td>Moderate (flow summaries)</td>
+<td>Switch config + Ingest VM</td>
+<td>High-rate environments, fabric-wide coverage</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>The ERSPAN Ingest appliance is the <strong>same OVA/QCOW2</strong> as
+the standard Ingest appliance — it runs <strong>3 ERSPAN connectors
+internally</strong>, each in a dedicated Docker container with exclusive
+vCPU and vNIC assignment.</p>
+</blockquote>
+<hr />
+<h2 id="architecture">2. Architecture</h2>
+<pre><code>┌──────────────────────────────────────────────────────────────────────┐
+│                    Data Center / Campus Network                        │
+│                                                                       │
+│  ┌────────────────────────────────────────────┐                      │
+│  │  Cisco Nexus 9000 (or Catalyst, ASR, etc.) │                      │
+│  │                                             │                      │
+│  │  ERSPAN Source Session:                     │                      │
+│  │    Source: interfaces eth1/23, VLANs 315,512│                      │
+│  │    Destination IP: 172.28.126.194 (Ingest)  │                      │
+│  │    GRE encapsulation (ERSPAN Type II)       │                      │
+│  └────────────────┬───────────────────────────┘                      │
+│                   │  GRE-encapsulated mirrored frames                 │
+│                   ▼                                                   │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │    CSW Ingest Appliance (ERSPAN mode)                          │  │
+│  │    (Same OVA as standard Ingest)                               │  │
+│  │                                                                │  │
+│  │    Container 1: ERSPAN connector (vNIC 1) — VLAN A            │  │
+│  │    Container 2: ERSPAN connector (vNIC 2) — VLAN B            │  │
+│  │    Container 3: ERSPAN connector (vNIC 3) — VLAN C            │  │
+│  │                                                                │  │
+│  │    Each container: dedicated SPAN agent, 2 vCPUs              │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                   │ Processed flows forwarded to CSW                  │
+│  ┌────────────────▼───────────────────────────────────────────────┐  │
+│  │    Cisco Secure Workload Cluster                               │  │
+│  │    ADM, policy, forensics                                      │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘</code></pre>
+<hr />
+<h2 id="erspan-types-supported">3. ERSPAN Types Supported</h2>
+<table>
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 30%" />
+<col style="width: 39%" />
+</colgroup>
+<thead>
+<tr>
+<th>ERSPAN Type</th>
+<th>Description</th>
+<th>Default on Cisco</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Type I</strong></td>
+<td>Lowest overhead — no ERSPAN header</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>Type II</strong></td>
+<td>Standard — includes session ID, VLAN, CoS; QoS-capable</td>
+<td><strong>Yes (most switches)</strong></td>
+</tr>
+<tr>
+<td><strong>Type III</strong></td>
+<td>Extended — additional metadata (timestamp, etc.)</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>CSW supports all three types. <strong>Type II is the typical
+default</strong> on Cisco switches and is recommended. Use the smallest
+version that meets your needs for lower header overhead.</p>
+<blockquote>
+<p>CSW SPAN agents process ERSPAN packets but do not extract additional
+metadata from Type II/III headers beyond what is needed for flow
+identification.</p>
+</blockquote>
+<hr />
+<h2 id="use-cases">4. Use Cases</h2>
+<h3 id="use-case-1-legacy-server-visibility-no-agent-possible">Use Case
+1 — Legacy Server Visibility (no agent possible)</h3>
+<p>Mirror traffic from the server’s access port on the ToR switch. CSW
+gets full L2–L7 flow visibility for the server with zero software
+installation on the server itself.</p>
+<h3 id="use-case-2-mainframe-ot-device-monitoring">Use Case 2 —
+Mainframe / OT Device Monitoring</h3>
+<p>For IBM mainframes, SCADA/ICS devices, or embedded systems that
+cannot run any agent, ERSPAN from the connected switch port provides
+complete flow data.</p>
+<h3 id="use-case-3-east-west-visibility-on-critical-vlans">Use Case 3 —
+East-West Visibility on Critical VLANs</h3>
+<p>Mirror specific VLANs (e.g., PCI DMZ VLAN, Database VLAN) to an
+ERSPAN connector for high-fidelity flow analysis of the most sensitive
+traffic segments.</p>
+<h3 id="use-case-4-vmware-vsphere-vds-traffic">Use Case 4 — VMware
+vSphere / VDS Traffic</h3>
+<p>ERSPAN supports VMware vSphere Distributed Switch (VDS) non-RFC
+format — enabling visibility into virtualized workloads without per-VM
+agents.</p>
+<hr />
+<h2 id="prerequisites">5. Prerequisites</h2>
+<h3 id="network-device-requirements">Network device requirements</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"></input>Cisco switch/router supporting
+ERSPAN (Nexus 9000, Catalyst 9000, ASR, etc.) or VMware VDS</label></li>
+<li><label><input type="checkbox"></input>L3 reachability from switch to CSW
+Ingest appliance IP (ERSPAN is IP-encapsulated GRE)</label></li>
+<li><label><input type="checkbox"></input>Sufficient bandwidth on the path to
+the Ingest appliance for the mirrored traffic volume</label></li>
+<li><label><input type="checkbox"></input>ERSPAN source session available
+(switches have a limited number of SPAN/ERSPAN sessions)</label></li>
+</ul>
+<h3 id="csw-ingest-appliance-requirements">CSW Ingest appliance
+requirements</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"></input>Deployed as an ERSPAN-mode Ingest
+appliance (same OVA, ERSPAN mode selected at deploy)</label></li>
+<li><label><input type="checkbox"></input>Each of the 3 internal containers
+has a dedicated vNIC for ERSPAN reception</label></li>
+<li><label><input type="checkbox"></input>Ingest appliance registered with CSW
+cluster</label></li>
+<li><label><input type="checkbox"></input>2 vCPUs per container (6 total for
+ERSPAN VM)</label></li>
+</ul>
+<hr />
+<h2 id="step-a-configure-erspan-source-on-switch">6. Step A — Configure
+ERSPAN Source on Switch</h2>
+<h3 id="cisco-nexus-9000-erspan-source-session">Cisco Nexus 9000 —
+ERSPAN source session</h3>
+<pre class="nxos"><code>! Create ERSPAN source session
+monitor session 10 type erspan-source
+
+! Specify source — interfaces or VLANs (or both)
+  source interface Ethernet1/23 both        ! Mirror ingress + egress
+  source vlan 315,512                       ! Mirror entire VLAN
+
+! Configure ERSPAN destination (CSW Ingest appliance IP)
+  destination ip 172.28.126.194             ! Ingest appliance vNIC IP
+  erspan-id 10                              ! Must match on source and destination
+  vrf default                               ! VRF for ERSPAN transport
+
+! Set source IP (must be a routable L3 interface on this switch)
+  ip ttl 64
+  origin ip 172.28.126.1                    ! Switch L3 interface IP
+  no shut</code></pre>
+<h3 id="cisco-iosios-xe-erspan-source-session">Cisco IOS/IOS-XE — ERSPAN
+source session</h3>
+<pre class="ios"><code>monitor session 1 type erspan-source
+ source interface GigabitEthernet1/0/1 both
+ source vlan 100
+ destination
+  erspan-id 101
+  ip address 10.x.x.x           ! CSW Ingest appliance IP
+  origin ip address 10.y.y.y    ! Switch source IP
+  mtu 1464                      ! Account for ERSPAN overhead (~160 bytes)
+ no shut</code></pre>
+<h3 id="vmware-vsphere-distributed-switch-vds">VMware vSphere
+Distributed Switch (VDS)</h3>
+<ol type="1">
+<li>vCenter → <strong>Networking &gt; [Distributed Switch] &gt; Monitor
+Sessions</strong></li>
+<li>Click <strong>New Monitor Session</strong></li>
+<li>Type: <strong>Remote Mirroring Source</strong></li>
+<li>Source: select port groups or individual vNICs to mirror</li>
+<li>Destination: ERSPAN destination IP = CSW Ingest appliance IP</li>
+<li>ERSPAN ID: set a session ID (1–1023)</li>
+<li>Click <strong>Finish</strong></li>
+</ol>
+<hr />
+<h2 id="step-b-deploy-the-csw-ingest-appliance-for-erspan">7. Step B —
+Deploy the CSW Ingest Appliance for ERSPAN</h2>
+<h3 id="b1-download-and-deploy-the-ovaqcow2">B1 — Download and deploy
+the OVA/QCOW2</h3>
+<p>The ERSPAN Ingest appliance uses the <strong>same OVA or
+QCOW2</strong> as a standard Ingest appliance. During deployment, select
+<strong>ERSPAN mode</strong> in the appliance configuration.</p>
+<p>The VM internally runs <strong>3 ERSPAN connector
+containers</strong>, each with: - 1 dedicated vNIC - 2 dedicated vCPUs -
+No quota limiting on the cores</p>
+<h3 id="b2-vnic-assignment">B2 — vNIC assignment</h3>
+<p>Each container gets exclusive access to one vNIC. The ERSPAN source
+session destination IP must match the IP assigned to that vNIC.</p>
+<pre><code>Container 1 → vNIC 1 IP: 172.28.126.194   ← ERSPAN session 10 destination
+Container 2 → vNIC 2 IP: 172.28.126.195   ← ERSPAN session 11 destination
+Container 3 → vNIC 3 IP: 172.28.126.196   ← ERSPAN session 12 destination</code></pre>
+<h3 id="b3-register-with-csw">B3 — Register with CSW</h3>
+<p>After deployment, the ERSPAN Ingest appliance appears in
+<strong>Manage &gt; Virtual Appliances</strong>. Each container
+registers a <strong>SPAN Agent</strong> with the cluster — visible in
+the Agent List.</p>
+<h3 id="b4-no-additional-connector-configuration-needed">B4 — No
+additional connector configuration needed</h3>
+<p>Unlike NetFlow, the ERSPAN connector <strong>does not require
+explicit CSW UI configuration</strong> beyond the appliance deployment.
+The SPAN agents self-register when the appliance boots and containers
+start.</p>
+<hr />
+<h2 id="performance-considerations">8. Performance Considerations</h2>
+<table>
+<colgroup>
+<col style="width: 47%" />
+<col style="width: 52%" />
+</colgroup>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Guidance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source interface selection</strong></td>
+<td>Be selective — each mirrored interface adds traffic load. Avoid
+mirroring uplinks unless necessary.</td>
+</tr>
+<tr>
+<td><strong>VLAN-based mirroring</strong></td>
+<td>Mirror entire VLANs only for low-traffic or critical VLANs</td>
+</tr>
+<tr>
+<td><strong>ACL filtering</strong></td>
+<td>Use ERSPAN filter ACLs to limit what is mirrored (reduces load)</td>
+</tr>
+<tr>
+<td><strong>MTU</strong></td>
+<td>Set MTU to account for ERSPAN overhead (160+ bytes); typical:
+<code>mtu 1464</code></td>
+</tr>
+<tr>
+<td><strong>ERSPAN version</strong></td>
+<td>Use Type I or II for lower overhead vs Type III</td>
+</tr>
+<tr>
+<td><strong>Bandwidth</strong></td>
+<td>Ensure the path to Ingest has sufficient capacity for mirrored
+traffic</td>
+</tr>
+<tr>
+<td><strong>Agent Packet Misses</strong></td>
+<td>Monitor in CSW UI: <strong>Agents &gt; [SPAN Agent] &gt; Packet
+Misses graph</strong></td>
+</tr>
+</tbody>
+</table>
+<p>If the SPAN agent receives more packets than 2 vCPUs can process,
+packet misses will increase. Reduce the ERSPAN source scope or add a
+second ERSPAN Ingest appliance.</p>
+<hr />
+<h2 id="security-considerations">9. Security Considerations</h2>
+<p>The ERSPAN Ingest appliance is hardened: - Guest OS:
+<strong>AlmaLinux 9.2</strong> (CSW 3.8.1.36+) or CentOS 7.9 (earlier
+versions) - OpenSSL server/client packages <strong>removed</strong> from
+the guest OS - After container deployment, <strong>no network interfaces
+exist in the guest OS</strong> (moved into containers) - Containers: no
+TCP/UDP ports exposed - Only console access available to the guest OS VM
+(no SSH) - Each container runs <code>almalinux/9-base:9.2</code> Docker
+image</p>
+<hr />
+<h2 id="verification">10. Verification</h2>
+<h3 id="check-span-agent-status-in-csw">Check SPAN agent status in
+CSW</h3>
+<p><strong>Manage &gt; Agents</strong> → filter by type <strong>SPAN
+Agent</strong> SPAN agents should appear with status
+<strong>Active</strong></p>
+<h3 id="check-packet-receipt-on-switch">Check packet receipt on
+switch</h3>
+<pre class="nxos"><code>show monitor session 10
+! Confirm: State = up, Destination = 172.28.126.194 (reachable)</code></pre>
+<h3 id="check-flow-data-in-csw">Check flow data in CSW</h3>
+<p><strong>Observe &gt; Traffic</strong> → filter by the VLAN or subnet
+you are mirroring Flows should appear with the full src/dst IP:port
+detail.</p>
+<h3 id="monitor-packet-misses">Monitor packet misses</h3>
+<p><strong>CSW UI &gt; Agents &gt; [SPAN Agent] &gt; Deep Visibility
+Agent page</strong> Check <strong>Agent Packet Misses</strong> graph —
+should be near 0.</p>
+<hr />
+<h2 id="limits">11. Limits</h2>
+<table>
+<colgroup>
+<col style="width: 53%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Limit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ERSPAN connectors per Ingest appliance</td>
+<td>3 (one per container/vNIC)</td>
+</tr>
+<tr>
+<td>vCPUs per ERSPAN container</td>
+<td>2 (dedicated, no quota)</td>
+</tr>
+<tr>
+<td>ERSPAN types supported</td>
+<td>Type I, II, III + VMware VDS format</td>
+</tr>
+<tr>
+<td>SPAN sessions per switch</td>
+<td>Platform-dependent (typically 4–8 per switch)</td>
+</tr>
+<tr>
+<td>Console-only access to VM</td>
+<td>SSH/TCP not available on guest OS</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="troubleshooting">12. Troubleshooting</h2>
+<table>
+<colgroup>
+<col style="width: 56%" />
+<col style="width: 43%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No flows from ERSPAN source</td>
+<td>Verify <code>show monitor session</code> on switch — state should be
+Up; ping from switch to Ingest vNIC IP; check GRE is not blocked by any
+firewall on the path</td>
+</tr>
+<tr>
+<td>SPAN agent not registering</td>
+<td>Check Ingest appliance console — containers should start within 2
+minutes of first boot; check CSW cluster connectivity from Ingest</td>
+</tr>
+<tr>
+<td>High packet miss rate</td>
+<td>Reduce ERSPAN source scope; add ERSPAN ACL filter on switch;
+consider additional Ingest appliance</td>
+</tr>
+<tr>
+<td>VMware VDS traffic not captured</td>
+<td>Confirm VDS version supports ERSPAN; use VDS “Remote Mirroring
+Source” type (not SPAN)</td>
+</tr>
+<tr>
+<td>Container not appearing</td>
+<td>Reboot Ingest VM; check VM has 6+ vCPUs and 3 vNICs assigned</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-resources">13. Related Resources</h2>
+<table>
+<colgroup>
+<col style="width: 35%" />
+<col style="width: 38%" />
+<col style="width: 26%" />
+</colgroup>
+<thead>
+<tr>
+<th>Repository</th>
+<th>Description</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/chandrapati/csw-netflow-integration">csw-netflow-integration</a></td>
+<td>NetFlow v9/IPFIX agentless flow ingestion</td>
+<td>High-rate environments, fabric-wide</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chandrapati/CSW-Secure-Firewall-Integration-Guide">CSW-Secure-Firewall-Integration-Guide</a></td>
+<td>NSEL from Cisco Secure Firewall</td>
+<td>Firewall-inserted flows</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chandrapati/CSW-Agent-Installation-Guide">CSW-Agent-Installation-Guide</a></td>
+<td>Deep-visibility agent for modern workloads</td>
+<td>Process-level visibility</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chandrapati/csw-servicenow-integration">csw-servicenow-integration</a></td>
+<td>ServiceNow CMDB labels for agentless workloads</td>
+<td>Enriching legacy server inventory</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chandrapati/CSW-Policy-Lifecycle">CSW-Policy-Lifecycle</a></td>
+<td>Build policy from ADM flow data</td>
+<td>Policy discovery workflow</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><em>Community reference — Cisco Solutions Engineering. Not an
+official Cisco product document.</em></p>
+</body>
+</html>
