@@ -1,5 +1,7 @@
 # Cisco Secure Workload — ERSPAN Integration Guide
 
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=chandrapati.csw-erspan-integration&left_text=visitors)
+
 > **Disclaimer:** Community reference guide by Cisco Solutions Engineering. Always consult [official Cisco Secure Workload documentation](https://www.cisco.com/c/en/us/products/security/tetration/index.html) for authoritative guidance.
 
 ERSPAN agentless packet mirroring: full-frame visibility for legacy, mainframe, OT/IoT, and VMware VDS workloads
