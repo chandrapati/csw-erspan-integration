@@ -18,7 +18,7 @@ ERSPAN agentless packet mirroring: full-frame visibility for legacy, mainframe, 
 
 ---
 
-## Related Cisco Secure Workload Resources
+## CSW Integration Guides & Resources
 
 | Repository | Description | Best for |
 |------------|-------------|---------|
